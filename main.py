@@ -16,9 +16,8 @@ from os import path, makedirs
 
 
 
-
-script_dir = Path(__file__).resolve().parent
-models_dir = script_dir / 'models'
+BASE_DIR = Path(__file__).resolve().parent
+models_dir = BASE_DIR / 'models'
 models_dir.mkdir(parents=True, exist_ok=True)
 
 if __name__ == "__main__":
@@ -35,7 +34,7 @@ if __name__ == "__main__":
     # 2. Backbone
     print("Charging model....")
     backbone = Net()
-    models_dir = script_dir / 'models'
+    models_dir = BASE_DIR / 'models'
 
     model_path = models_dir /'mnist_cnnPytorch.pt'
     if os.path.exists(model_path):
@@ -56,12 +55,12 @@ if __name__ == "__main__":
     patch_size = 7
     craft = Craft(input_to_latent=g, latent_to_logit=lambda x: x, number_of_concepts=15, patch_size=patch_size, device=device)
     crops, crops_u, w = craft.fit(images_batch)
-    np.save(script_dir /"craft_concept_bank.npy", w)
+    np.save(BASE_DIR /"craft_concept_bank.npy", w)
 
     print("Concepts discovered!", crops.shape, crops_u.shape, w.shape)
 
     # 4. Train UCBM
-    epochs =  35
+    epochs =  1
     lam_gate =  0
     lam_w = 0
     dropout_p = 0.0 #0.2
@@ -76,26 +75,26 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dataset = "MNIST"
     cls_save_name = "topk_seed_0"
-    h = np.load("craft_concept_bank.npy")
+    h = np.load(BASE_DIR / "craft_concept_bank.npy")
     h_tensor = torch.tensor(h, dtype=torch.float32)
     h_tensor = F.normalize(h_tensor, p=2, dim=1) # Normalización L2 estricta
     h = h_tensor.numpy()
 
     print("-----------------------------------------       Training UCBM....")
     ph_cbm = UCBM(backbone=g, h=h, batch_size=64, epochs=epochs, lam_gate=lam_gate, lam_w=lam_w, dropout_p=dropout_p, learning_rate=lr, relu=relu, scale_mode=scale_choose, bias_mode=bias_choose, normalize=normalize_concepts, k=k, device=device)
-    ph_cbm.fit(train_ds, "./mnist_activations")
+    ph_cbm.fit(train_ds, BASE_DIR / "mnist_activations")
 
     save_name = cls_save_name # author says is "topk_seed_0"
     if save_name == "":
         save_name = f"class_{datetime.now().strftime('%Y_%m_%d_-_%H_%M_%S')}"
     else:
         save_name += f"-{datetime.now().strftime('%Y_%m_%d_-_%H_%M_%S')}"
-    class_path = "Model" #class_path = path.join(plotter.get_classifier_path(), args.concept_data, save_name)
+    class_path = BASE_DIR / "Model" #class_path = path.join(plotter.get_classifier_path(), args.concept_data, save_name)
     makedirs(class_path, exist_ok=True)
     ph_cbm.save_to_file(class_path, "classifier.pth")
 
     metrics = ["acc", "auprc", "auprc_pc", "auroc"]
-    act_path = "./mnist_activations"
+    act_path = BASE_DIR / "mnist_activations"
     os.makedirs(act_path, exist_ok=True)
 
     info_dict = ph_cbm.get_info_dict(training_data=train_ds, test_data=test_ds, act_bank_path=act_path, images_preprocessed=images_batch.shape[0], patch_size=patch_size, total_patches=crops_u.shape[0], metrics=metrics)
@@ -106,4 +105,4 @@ if __name__ == "__main__":
     print("-----------------------------------------        UCBM Trained!!")
     
     # 5. Visualize
-    visualize_image_concepts(ph_cbm, test_ds)
+    #visualize_image_concepts(ph_cbm, test_ds)   
