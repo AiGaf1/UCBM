@@ -6,6 +6,7 @@ CRAFT Module for PyTorch
 from abc import ABC, abstractmethod
 from math import ceil
 from typing import Callable, Optional
+import torch.nn as nn
 
 import torch
 import numpy as np
@@ -14,6 +15,8 @@ from sklearn.exceptions import NotFittedError
 
 from .sobol.sampler import HaltonSequence
 from .sobol.estimators import JansenEstimator
+
+from pytorch_grad_cam import GradCAMPlusPlus
 
 
 def torch_to_numpy(tensor):
@@ -76,6 +79,9 @@ class BaseConceptExtractor(ABC):
         self.latent_to_logit = latent_to_logit
         self.number_of_concepts = number_of_concepts
         self.batch_size = batch_size
+
+
+        
 
     @abstractmethod
     def fit(self, inputs):
@@ -145,8 +151,74 @@ class Craft(BaseConceptExtractor):
         self.patch_size = patch_size
         self.activation_shape = None
         self.device = device
+        class Net(nn.Module):
+            def __init__(self, extractor, classifier):
+                super().__init__()
+                self.g = extractor
+                self.h = classifier
 
-    def fit(self, inputs: np.ndarray, filter_patches: bool = False ):
+            def forward(self, x):
+                features = self.g(x) 
+                logits = self.h(features)
+                return logits
+        self.full_model = Net(input_to_latent, latent_to_logit)
+
+            
+    def get_gradcam_crops(self, inputs, target_layer, patch_size, threshold=0.5, pad=2):
+      all_crops = []
+
+      if isinstance(inputs, np.ndarray):
+          inputs_tensor = torch.tensor(inputs, dtype=torch.float32)
+      else:
+          inputs_tensor = inputs.float()
+        
+      inputs_tensor = inputs_tensor.to(self.device)
+
+      self.full_model.eval()
+
+      for i in range(inputs_tensor.shape[0]):
+          img_tensor = inputs_tensor[i]
+
+          with GradCAMPlusPlus(model=self.full_model, target_layers=target_layer) as cam:
+              grayscale_cam = cam(
+                  input_tensor=img_tensor.unsqueeze(0),
+                  targets=None
+              )
+
+          cam_norm = grayscale_cam[0]
+          cam_norm = (cam_norm - cam_norm.min()) / (cam_norm.max() - cam_norm.min() + 1e-8)
+
+          mask = cam_norm >= threshold
+          rows = np.any(mask, axis=1)
+          cols = np.any(mask, axis=0)
+
+          if not rows.any() or not cols.any():
+              crop = img_tensor
+          else:
+              y_min, y_max = np.where(rows)[0][[0, -1]]
+              x_min, x_max = np.where(cols)[0][[0, -1]]
+
+              _, H, W = img_tensor.shape
+              y_min = max(0, y_min - pad)
+              y_max = min(H - 1, y_max + pad)
+              x_min = max(0, x_min - pad)
+              x_max = min(W - 1, x_max + pad)
+
+              crop = img_tensor[:, y_min:y_max+1, x_min:x_max+1]
+
+          crop_resized = torch.nn.functional.interpolate(
+              crop.unsqueeze(0),
+              size=(patch_size, patch_size),
+              mode="bilinear",
+              align_corners=False
+          ).squeeze(0)
+
+          all_crops.append(crop_resized)
+
+      return torch.stack(all_crops)
+
+
+    def fit(self, inputs: np.ndarray, filter_patches: bool = False, gradcam: bool = False):
         """
         Fit the Craft model to the input data.
 
@@ -172,12 +244,14 @@ class Craft(BaseConceptExtractor):
 
         image_size = inputs.shape[2]
 
-        # extract patches from the input data, keep patches on cpu
-        strides = int(self.patch_size * 0.80)
+        if not filter_patches and not gradcam:
+            print("Extracting patches from input data...")  
+            # extract patches from the input data, keep patches on cpu
+            strides = int(self.patch_size * 0.80)
 
-        patches = torch.nn.functional.unfold(inputs, kernel_size=self.patch_size, stride=strides)
-        num_channels = inputs.shape[1]
-        patches = patches.transpose(1, 2).contiguous().view(-1, num_channels, self.patch_size, self.patch_size)
+            patches = torch.nn.functional.unfold(inputs, kernel_size=self.patch_size, stride=strides)
+            num_channels = inputs.shape[1]
+            patches = patches.transpose(1, 2).contiguous().view(-1, num_channels, self.patch_size, self.patch_size)
 
         if filter_patches:
             # --- NEW: Filter out black patches ---
@@ -198,6 +272,19 @@ class Craft(BaseConceptExtractor):
             if patches.shape[0] == 0:
                 raise ValueError("All patches were black! Consider lowering the threshold.")
             # ------------------------------------
+
+        if gradcam: 
+            print("Computing Grad-CAM...")
+            self.full_model.eval()
+            target_layer = [self.full_model.conv2]
+
+            patches = self.get_gradcam_crops(
+                inputs,
+                target_layer=target_layer,
+                patch_size=self.patch_size,
+                threshold=0.5,
+                pad=2
+            )
 
         # encode the patches and obtain the activations
         activations = _batch_inference(self.input_to_latent, patches, self.batch_size, image_size, 
