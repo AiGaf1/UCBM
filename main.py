@@ -54,14 +54,15 @@ if __name__ == "__main__":
     images_batch = torch.stack([train_ds[i][0] for i in range(500)]).to(device)
 
     patch_size = 7
-    craft = Craft(input_to_latent=g, latent_to_logit=lambda x: x, number_of_concepts=50, patch_size=patch_size, device=device)
+    n_concepts = 80
+    craft = Craft(input_to_latent=g, latent_to_logit=lambda x: x, number_of_concepts=n_concepts, patch_size=patch_size, device=device)
     crops, crops_u, w = craft.fit(images_batch)
     np.save(BASE_DIR /"craft_concept_bank.npy", w)
 
     print("Concepts discovered!", crops.shape, crops_u.shape, w.shape)
 
     # 4. Train UCBM
-    epochs =  40
+    epochs =  30
     lam_gate =  0
     lam_w = 0
     dropout_p = 0.0 #0.2
@@ -70,8 +71,8 @@ if __name__ == "__main__":
     scale_choose= 'learn' #'no'
     bias_choose='learn' #-- normalize_concepts
     normalize_concepts = True # Boolean
-    relu='ReLU'
-    k = -1
+    relu='no'
+    k = 7
     seed = 0
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dataset = "MNIST"
